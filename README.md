@@ -9,15 +9,22 @@ sr-router intelligently routes LLM requests to the cheapest model that meets qua
 ## Quick Start
 
 ```bash
-# Install
-go install github.com/jbctechsolutions/sr-router/cmd@latest
+# Clone and build
+git clone https://github.com/jbctechsolutions/sr-router.git
+cd sr-router
+go build -o sr-router ./cmd/
 
-# Route a prompt
-sr-router route "Write a Go function for rate limiting"
+# Set at least the Anthropic key
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# Route a prompt (local only, no API call)
+./sr-router route "Write a Go function for rate limiting"
 
 # Start the proxy (point Claude Code at it)
-sr-router proxy --port 8889
+./sr-router proxy --port 8889
 ```
+
+For the full walkthrough -- API key setup, Ollama, MCP integration, configuration, and troubleshooting -- see the **[Setup Guide](docs/SETUP.md)**.
 
 ## How It Works
 
