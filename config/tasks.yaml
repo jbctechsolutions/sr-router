@@ -1,0 +1,83 @@
+tasks:
+  code:
+    patterns:
+      - "write.*function"
+      - "implement.*class"
+      - "create.*endpoint"
+      - "fix.*bug"
+      - "refactor"
+      - "add.*test"
+      - "debug"
+      - "code review"
+    required_strengths: [code]
+    min_quality: 0.80
+
+  architecture:
+    patterns:
+      - "design.*system"
+      - "architect"
+      - "microservice"
+      - "database.*schema"
+      - "API.*design"
+      - "system.*design"
+    required_strengths: [architecture, complex_reasoning]
+    min_quality: 0.90
+
+  summarization:
+    patterns:
+      - "summarize"
+      - "compress"
+      - "condense"
+      - "TLDR"
+      - "key.*points"
+      - "brief"
+    required_strengths: [summarization]
+    min_quality: 0.50
+
+  data_extraction:
+    patterns:
+      - "extract"
+      - "parse"
+      - "CSV"
+      - "JSON.*convert"
+      - "data.*from"
+      - "scrape"
+    required_strengths: [data_extraction]
+    min_quality: 0.55
+
+  translation:
+    patterns:
+      - "translate"
+      - "convert.*language"
+      - "localize"
+    required_strengths: [translation]
+    min_quality: 0.60
+
+  simple_code:
+    patterns:
+      - "hello.*world"
+      - "boilerplate"
+      - "template"
+      - "scaffold"
+      - "generate.*config"
+    required_strengths: [simple_code]
+    min_quality: 0.60
+
+  chat:
+    patterns:
+      - "explain"
+      - "what.*is"
+      - "how.*does"
+      - "tell.*me"
+      - "help.*me"
+    required_strengths: []
+    min_quality: 0.70
+
+  code_review:
+    patterns:
+      - "review.*code"
+      - "review.*PR"
+      - "code.*quality"
+      - "find.*issues"
+    required_strengths: [code_review]
+    min_quality: 0.85

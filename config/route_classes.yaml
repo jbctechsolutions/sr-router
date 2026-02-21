@@ -1,0 +1,36 @@
+route_classes:
+  interactive:
+    description: "User-facing chat, complex reasoning"
+    detection:
+      stdin: true
+      flags: ["--interactive"]
+      headers: ["x-request-type: chat"]
+    default_tier: premium
+    latency_budget_ms: 30000
+    quality_floor: 0.85
+
+  background:
+    description: "Cron jobs, batch processing, pipes"
+    detection:
+      stdin: false
+      flags: ["--background", "--bg"]
+      headers: ["x-request-type: background"]
+      env: ["SKILLRUNNER_MODE=background"]
+    default_tier: budget
+    latency_budget_ms: 120000
+    quality_floor: 0.60
+
+  compaction:
+    description: "Context summarization, conversation compression"
+    detection:
+      content_patterns:
+        - "summarize.*conversation"
+        - "compress.*context"
+        - "conversation history"
+      system_prompt_patterns:
+        - "compaction"
+        - "summarize the above"
+      headers: ["x-request-type: compaction"]
+    default_tier: speed
+    latency_budget_ms: 5000
+    quality_floor: 0.50

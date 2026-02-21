@@ -1,0 +1,110 @@
+defaults:
+  quality_threshold: 0.7
+  cost_weight: 0.4
+  quality_weight: 0.6
+  fallback_model: "claude-sonnet"
+
+tiers:
+  premium:
+    description: "Best quality — interactive/complex work"
+    models: [claude-opus, claude-sonnet]
+  budget:
+    description: "Cheap bulk — background/batch tasks"
+    models: [minimax-m2, ollama/llama3.2, ollama/mistral]
+  speed:
+    description: "Fastest — compaction/compression"
+    models: [cerebras-glm, ollama/llama3.2]
+  free:
+    description: "Zero cost fallback"
+    models: [ollama/llama3.2, ollama/codellama]
+
+failover:
+  premium:
+    chain: [claude-opus, claude-sonnet, ollama/llama3.2]
+    retry_on: [rate_limit, 5xx, timeout]
+    max_retries: 3
+  budget:
+    chain: [minimax-m2, ollama/mistral, ollama/llama3.2]
+    retry_on: [rate_limit, 5xx, timeout]
+    max_retries: 2
+  speed:
+    chain: [cerebras-glm, ollama/llama3.2]
+    retry_on: [rate_limit, 5xx, timeout]
+    max_retries: 2
+
+models:
+  claude-opus:
+    provider: anthropic
+    api_model: "claude-opus-4-6"
+    strengths: [complex_reasoning, architecture, nuanced_writing, code_review]
+    weaknesses: []
+    cost_per_1k_tokens: 0.075
+    avg_latency_ms: 5000
+    quality_ceiling: 0.98
+    max_context: 200000
+    prompt_suffix: null
+
+  claude-sonnet:
+    provider: anthropic
+    api_model: "claude-sonnet-4-5-20250929"
+    strengths: [code, analysis, editing, reasoning]
+    weaknesses: []
+    cost_per_1k_tokens: 0.015
+    avg_latency_ms: 3000
+    quality_ceiling: 0.90
+    max_context: 200000
+    prompt_suffix: null
+
+  minimax-m2:
+    provider: openai_compat
+    api_model: "MiniMax-M2"
+    base_url: "https://api.minimax.io/v1"
+    strengths: [bulk_text, simple_code, summarization, data_extraction]
+    weaknesses: [complex_reasoning, architecture]
+    cost_per_1k_tokens: 0.0003
+    avg_latency_ms: 2000
+    quality_ceiling: 0.72
+    max_context: 128000
+    prompt_suffix: |
+      CRITICAL FORMATTING RULES:
+      - NEVER output XML tags like <tool_call>, <invoke>, <FunctionCall>
+      - ALWAYS use **bold** for emphasis and headers
+      - Keep responses concise and actionable
+      - If the message requires no response, output exactly: NO_REPLY
+
+  cerebras-glm:
+    provider: openai_compat
+    api_model: "glm-4.7"
+    base_url: "https://api.cerebras.ai/v1"
+    strengths: [summarization, compaction, simple_code]
+    weaknesses: [complex_reasoning, nuanced_writing]
+    cost_per_1k_tokens: 0.0006
+    avg_latency_ms: 500
+    quality_ceiling: 0.68
+    max_context: 128000
+    prompt_suffix: null
+
+  ollama/llama3.2:
+    provider: ollama
+    api_model: "llama3.2"
+    base_url: "http://localhost:11434"
+    strengths: [summarization, simple_code, bulk_text, translation, data_extraction]
+    weaknesses: [complex_reasoning, architecture, nuanced_writing]
+    cost_per_1k_tokens: 0.0
+    avg_latency_ms: 800
+    quality_ceiling: 0.65
+    max_context: 8192
+    prompt_suffix: |
+      Respond directly without preamble. Do not explain your reasoning unless asked.
+
+  ollama/codellama:
+    provider: ollama
+    api_model: "codellama"
+    base_url: "http://localhost:11434"
+    strengths: [simple_code, code_completion, refactoring, unit_tests]
+    weaknesses: [prose, reasoning, architecture]
+    cost_per_1k_tokens: 0.0
+    avg_latency_ms: 900
+    quality_ceiling: 0.70
+    max_context: 16384
+    prompt_suffix: null
