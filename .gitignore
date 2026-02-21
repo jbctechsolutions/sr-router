@@ -1,0 +1,5 @@
+sr-router
+*.db
+*.sqlite
+.env
+dist/
