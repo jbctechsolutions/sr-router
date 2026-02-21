@@ -3,3 +3,4 @@ sr-router
 *.sqlite
 .env
 dist/
+.worktrees/
