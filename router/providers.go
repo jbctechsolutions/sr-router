@@ -20,6 +20,12 @@ type ProviderRequest struct {
 	MaxTokens    int
 	Temperature  float64
 	Stream       bool
+
+	// RawAnthropicBody, when non-nil, is the original Anthropic API request
+	// body. For Anthropic-provider targets this is forwarded directly —
+	// preserving tool_use, tool_result, images, thinking blocks, etc. — with
+	// only the model name and system-prompt suffix patched.
+	RawAnthropicBody []byte
 }
 
 // ProviderMessage is a single turn in the conversation.
@@ -40,11 +46,16 @@ type ProviderResponse struct {
 }
 
 // callProvider dispatches to the correct provider implementation based on
-// model.Provider. The returned *http.Response body is NOT consumed — the
-// caller is responsible for reading and closing it.
+// model.Provider. When RawAnthropicBody is set and the target is an Anthropic
+// provider, the raw body is forwarded directly (preserving rich content).
+// The returned *http.Response body is NOT consumed — the caller is responsible
+// for reading and closing it.
 func callProvider(ctx context.Context, model config.Model, req ProviderRequest) (*http.Response, error) {
 	switch model.Provider {
 	case "anthropic":
+		if len(req.RawAnthropicBody) > 0 {
+			return callAnthropicRaw(ctx, model, req.RawAnthropicBody)
+		}
 		return callAnthropic(ctx, model, req)
 	case "openai_compat":
 		return callOpenAICompat(ctx, model, req)
@@ -209,6 +220,88 @@ func buildOpenAICompatBody(req ProviderRequest, apiModel string) map[string]inte
 		"messages":   msgs,
 		"stream":     req.Stream,
 	}
+}
+
+// callAnthropicRaw sends a pre-built JSON body to the Anthropic Messages API.
+// The body is forwarded as-is — the caller is responsible for patching the
+// model name and injecting any prompt suffix before calling this function.
+func callAnthropicRaw(ctx context.Context, model config.Model, patchedBody []byte) (*http.Response, error) {
+	endpoint := "https://api.anthropic.com/v1/messages"
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(patchedBody))
+	if err != nil {
+		return nil, fmt.Errorf("creating anthropic raw request: %w", err)
+	}
+
+	apiKey := resolveAPIKey("anthropic", "")
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-api-key", apiKey)
+	httpReq.Header.Set("anthropic-version", "2023-06-01")
+
+	return http.DefaultClient.Do(httpReq)
+}
+
+// PatchAnthropicRawBody takes an original Anthropic API request body and
+// returns a copy with the "model" field set to apiModel and the optional
+// suffix appended to the "system" field. All other fields (messages with
+// tool_use, tool_result, images, thinking blocks, etc.) are preserved
+// byte-for-byte.
+func PatchAnthropicRawBody(rawBody []byte, apiModel string, suffix string) ([]byte, error) {
+	var body map[string]json.RawMessage
+	if err := json.Unmarshal(rawBody, &body); err != nil {
+		return nil, fmt.Errorf("unmarshalling raw body: %w", err)
+	}
+
+	// Patch the model field.
+	modelJSON, err := json.Marshal(apiModel)
+	if err != nil {
+		return nil, fmt.Errorf("marshalling api_model: %w", err)
+	}
+	body["model"] = modelJSON
+
+	// Inject suffix into system if needed.
+	if suffix != "" {
+		if existing, ok := body["system"]; ok {
+			// Try as plain string.
+			var s string
+			if err := json.Unmarshal(existing, &s); err == nil {
+				if s == "" {
+					s = suffix
+				} else {
+					s += "\n\n" + suffix
+				}
+				patched, _ := json.Marshal(s)
+				body["system"] = patched
+			} else {
+				// Try as array of content blocks.
+				var blocks []json.RawMessage
+				if err := json.Unmarshal(existing, &blocks); err == nil {
+					newBlock, _ := json.Marshal(map[string]string{
+						"type": "text",
+						"text": "\n\n" + suffix,
+					})
+					blocks = append(blocks, newBlock)
+					patched, _ := json.Marshal(blocks)
+					body["system"] = patched
+				}
+			}
+		} else {
+			// No system field — add it as a plain string.
+			patched, _ := json.Marshal(suffix)
+			body["system"] = patched
+		}
+	}
+
+	return json.Marshal(body)
+}
+
+// getModelSuffix returns the trimmed prompt suffix for a model, or "" if none.
+func getModelSuffix(cfg *config.Config, modelName string) string {
+	m, ok := cfg.Models[modelName]
+	if !ok || m.PromptSuffix == nil {
+		return ""
+	}
+	return strings.TrimSpace(*m.PromptSuffix)
 }
 
 // buildOllamaBody constructs the JSON-serialisable map for the Ollama

@@ -44,6 +44,10 @@ func NewFailoverEngine(cfg *config.Config, router *Router, tel *telemetry.Collec
 func (f *FailoverEngine) ExecuteWithFailover(ctx context.Context, tier string, req ProviderRequest) (*http.Response, string, error) {
 	chain := f.cfg.GetFailoverChain(tier)
 
+	// Preserve the original raw body so each iteration patches from a clean
+	// copy, avoiding accumulated model-name or suffix mutations.
+	originalRawBody := req.RawAnthropicBody
+
 	for i, modelName := range chain {
 		model, ok := f.cfg.Models[modelName]
 		if !ok {
@@ -54,6 +58,23 @@ func (f *FailoverEngine) ExecuteWithFailover(ctx context.Context, tier string, r
 		// Inject the model-specific prompt suffix before each attempt so that
 		// each provider in the chain receives an appropriately decorated prompt.
 		req.SystemPrompt = f.router.InjectSuffix(modelName, req.SystemPrompt)
+
+		// For Anthropic providers with raw body available, patch the original
+		// body with this model's API name and suffix for direct passthrough
+		// (preserving tool_use, tool_result, images, etc.). Non-Anthropic
+		// providers always use the normalised text path.
+		if len(originalRawBody) > 0 && model.Provider == "anthropic" {
+			suffix := getModelSuffix(f.cfg, modelName)
+			patched, patchErr := PatchAnthropicRawBody(originalRawBody, model.APIModel, suffix)
+			if patchErr != nil {
+				log.Printf("failover: raw body patch failed for %s: %v, falling back to normalised", modelName, patchErr)
+				req.RawAnthropicBody = nil
+			} else {
+				req.RawAnthropicBody = patched
+			}
+		} else {
+			req.RawAnthropicBody = nil
+		}
 
 		resp, err := callProvider(ctx, model, req)
 		if err != nil {

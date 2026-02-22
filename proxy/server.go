@@ -148,11 +148,12 @@ func (p *ProxyServer) handleMessages(w http.ResponseWriter, r *http.Request) {
 	modifiedSystem := p.router.InjectSuffix(decision.Model, systemPrompt)
 
 	provReq := router.ProviderRequest{
-		SystemPrompt: modifiedSystem,
-		Messages:     messages,
-		MaxTokens:    req.MaxTokens,
-		Temperature:  req.Temperature,
-		Stream:       req.Stream,
+		SystemPrompt:     modifiedSystem,
+		Messages:         messages,
+		MaxTokens:        req.MaxTokens,
+		Temperature:      req.Temperature,
+		Stream:           req.Stream,
+		RawAnthropicBody: body,
 	}
 
 	// 7. Execute with failover.

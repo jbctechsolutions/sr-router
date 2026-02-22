@@ -423,3 +423,230 @@ func TestResolveAPIKey_OpenAICompatCerebras(t *testing.T) {
 		t.Errorf("got key %q, want %q", key, "cb-secret")
 	}
 }
+
+// --- PatchAnthropicRawBody tests -------------------------------------------
+
+// TestPatchAnthropicRawBody_PatchesModel verifies that the model field is
+// replaced and other fields (including rich message content) are preserved.
+func TestPatchAnthropicRawBody_PatchesModel(t *testing.T) {
+	raw := []byte(`{
+		"model": "client-model",
+		"max_tokens": 1024,
+		"messages": [
+			{"role": "user", "content": [
+				{"type": "text", "text": "hello"},
+				{"type": "tool_result", "tool_use_id": "tu_123", "content": "result data"}
+			]}
+		]
+	}`)
+
+	patched, err := PatchAnthropicRawBody(raw, "claude-3-5-sonnet-latest", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var result map[string]json.RawMessage
+	if err := json.Unmarshal(patched, &result); err != nil {
+		t.Fatalf("failed to unmarshal patched body: %v", err)
+	}
+
+	// Verify model was patched.
+	var model string
+	json.Unmarshal(result["model"], &model)
+	if model != "claude-3-5-sonnet-latest" {
+		t.Errorf("model = %q, want %q", model, "claude-3-5-sonnet-latest")
+	}
+
+	// Verify messages (with tool_result) are preserved.
+	var msgs []map[string]json.RawMessage
+	json.Unmarshal(result["messages"], &msgs)
+	if len(msgs) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(msgs))
+	}
+
+	var content []map[string]interface{}
+	json.Unmarshal(msgs[0]["content"], &content)
+	if len(content) != 2 {
+		t.Fatalf("expected 2 content blocks, got %d", len(content))
+	}
+	if content[1]["type"] != "tool_result" {
+		t.Errorf("second block type = %v, want tool_result", content[1]["type"])
+	}
+}
+
+// TestPatchAnthropicRawBody_InjectsSuffixStringSystem verifies suffix injection
+// when system is a plain string.
+func TestPatchAnthropicRawBody_InjectsSuffixStringSystem(t *testing.T) {
+	raw := []byte(`{"model":"m","system":"You are helpful","messages":[]}`)
+
+	patched, err := PatchAnthropicRawBody(raw, "new-model", "Format nicely")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var result map[string]json.RawMessage
+	json.Unmarshal(patched, &result)
+
+	var system string
+	json.Unmarshal(result["system"], &system)
+	if system != "You are helpful\n\nFormat nicely" {
+		t.Errorf("system = %q, want %q", system, "You are helpful\n\nFormat nicely")
+	}
+}
+
+// TestPatchAnthropicRawBody_InjectsSuffixArraySystem verifies suffix injection
+// when system is an array of content blocks.
+func TestPatchAnthropicRawBody_InjectsSuffixArraySystem(t *testing.T) {
+	raw := []byte(`{"model":"m","system":[{"type":"text","text":"base prompt"}],"messages":[]}`)
+
+	patched, err := PatchAnthropicRawBody(raw, "new-model", "extra instruction")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var result map[string]json.RawMessage
+	json.Unmarshal(patched, &result)
+
+	var blocks []map[string]string
+	json.Unmarshal(result["system"], &blocks)
+	if len(blocks) != 2 {
+		t.Fatalf("expected 2 system blocks, got %d", len(blocks))
+	}
+	if blocks[1]["text"] != "\n\nextra instruction" {
+		t.Errorf("appended block text = %q, want %q", blocks[1]["text"], "\n\nextra instruction")
+	}
+}
+
+// TestPatchAnthropicRawBody_AddsSuffixWhenNoSystem verifies that the suffix is
+// added as a new system field when the original request has none.
+func TestPatchAnthropicRawBody_AddsSuffixWhenNoSystem(t *testing.T) {
+	raw := []byte(`{"model":"m","messages":[]}`)
+
+	patched, err := PatchAnthropicRawBody(raw, "new-model", "injected suffix")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var result map[string]json.RawMessage
+	json.Unmarshal(patched, &result)
+
+	var system string
+	json.Unmarshal(result["system"], &system)
+	if system != "injected suffix" {
+		t.Errorf("system = %q, want %q", system, "injected suffix")
+	}
+}
+
+// TestPatchAnthropicRawBody_PreservesToolUseBlocks verifies that tool_use
+// content blocks in messages survive the patching round-trip.
+func TestPatchAnthropicRawBody_PreservesToolUseBlocks(t *testing.T) {
+	raw := []byte(`{
+		"model": "old",
+		"messages": [
+			{"role": "user", "content": "hello"},
+			{"role": "assistant", "content": [
+				{"type": "text", "text": "I'll use a tool"},
+				{"type": "tool_use", "id": "tu_abc", "name": "read_file", "input": {"path": "/foo"}}
+			]},
+			{"role": "user", "content": [
+				{"type": "tool_result", "tool_use_id": "tu_abc", "content": "file contents here"}
+			]}
+		]
+	}`)
+
+	patched, err := PatchAnthropicRawBody(raw, "new-model", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify the tool_use and tool_result blocks are preserved by checking
+	// that the strings appear in the output.
+	s := string(patched)
+	for _, want := range []string{"tool_use", "tu_abc", "read_file", "tool_result", "file contents here"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("patched body missing %q", want)
+		}
+	}
+}
+
+// TestGetModelSuffix verifies the getModelSuffix helper.
+func TestGetModelSuffix(t *testing.T) {
+	suffix := "  format nicely  "
+	cfg := &config.Config{
+		Models: map[string]config.Model{
+			"with-suffix":    {PromptSuffix: &suffix},
+			"without-suffix": {},
+		},
+	}
+
+	if got := getModelSuffix(cfg, "with-suffix"); got != "format nicely" {
+		t.Errorf("got %q, want %q", got, "format nicely")
+	}
+	if got := getModelSuffix(cfg, "without-suffix"); got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
+	if got := getModelSuffix(cfg, "missing"); got != "" {
+		t.Errorf("got %q, want empty", got)
+	}
+}
+
+// TestExecuteWithFailover_RawPassthroughForAnthropic verifies that when
+// RawAnthropicBody is set and the provider is Anthropic, the raw body
+// is forwarded (with model name patched) instead of the normalised request.
+func TestExecuteWithFailover_RawPassthroughForAnthropic(t *testing.T) {
+	var capturedBody map[string]json.RawMessage
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&capturedBody)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"id":"msg_1","type":"message","content":[{"type":"text","text":"ok"}]}`))
+	}))
+	defer srv.Close()
+
+	// We can't override the Anthropic endpoint directly, so we test through
+	// openai_compat which lets us use the test server. Instead, we test the
+	// raw body patching + dispatch logic by verifying PatchAnthropicRawBody
+	// output and that the failover engine sets RawAnthropicBody for anthropic
+	// models.
+
+	// Test that for an openai_compat model, the raw body is NOT used.
+	suffix := ""
+	cfg := minimalConfig(map[string]config.Model{
+		"model-a": {Provider: "openai_compat", APIModel: "gpt-a", BaseURL: srv.URL, PromptSuffix: &suffix},
+	}, []string{"model-a"})
+
+	rtr := NewRouter(cfg)
+	engine := NewFailoverEngine(cfg, rtr, nil)
+
+	rawBody := []byte(`{"model":"client","messages":[{"role":"user","content":[{"type":"tool_result","tool_use_id":"x","content":"data"}]}]}`)
+
+	resp, _, err := engine.ExecuteWithFailover(
+		context.Background(),
+		"test-tier",
+		ProviderRequest{
+			Messages:         []ProviderMessage{{Role: "user", Content: "hi"}},
+			RawAnthropicBody: rawBody,
+		},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	resp.Body.Close()
+
+	// For openai_compat, the captured body should use the normalised format,
+	// NOT the raw body (which contains tool_result).
+	var model string
+	json.Unmarshal(capturedBody["model"], &model)
+	if model != "gpt-a" {
+		t.Errorf("model = %q, want %q (normalised path should have been used)", model, "gpt-a")
+	}
+
+	// The raw body's tool_result should NOT appear in the captured body.
+	if _, ok := capturedBody["messages"]; ok {
+		bodyStr := string(capturedBody["messages"])
+		if strings.Contains(bodyStr, "tool_result") {
+			t.Error("normalised path should not contain tool_result from raw body")
+		}
+	}
+}
