@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -80,6 +81,23 @@ func sseHeaders(w http.ResponseWriter) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+}
+
+// checkResponseStatus returns true if the provider response has a non-2xx
+// status. When that happens it reads the body, closes it, and writes an
+// Anthropic-format error to w so the caller can return early.
+func checkResponseStatus(w http.ResponseWriter, resp *http.Response) bool {
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return false
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	msg := fmt.Sprintf("upstream provider returned %d", resp.StatusCode)
+	if len(body) > 0 {
+		msg += ": " + string(body)
+	}
+	sendError(w, "api_error", msg, resp.StatusCode)
+	return true
 }
 
 // writeSSEEvent serialises data as JSON and writes a single SSE event frame,
@@ -194,6 +212,9 @@ type ollamaChunk struct {
 // This is used when the upstream provider is Anthropic itself — no translation
 // is needed.
 func StreamAnthropicPassthrough(w http.ResponseWriter, resp *http.Response, _ string) {
+	if checkResponseStatus(w, resp) {
+		return
+	}
 	sseHeaders(w)
 
 	flusher, ok := w.(http.Flusher)
@@ -226,6 +247,9 @@ func StreamAnthropicPassthrough(w http.ResponseWriter, resp *http.Response, _ st
 //  3. content_block_delta — once per OpenAI chunk that contains text
 //  4. content_block_stop, message_delta, message_stop — once at [DONE]
 func StreamOpenAIToAnthropic(w http.ResponseWriter, resp *http.Response, requestID string, model string) {
+	if checkResponseStatus(w, resp) {
+		return
+	}
 	sseHeaders(w)
 
 	flusher, ok := w.(http.Flusher)
@@ -278,6 +302,9 @@ func StreamOpenAIToAnthropic(w http.ResponseWriter, resp *http.Response, request
 // unmarshalled and translated. The final line (done == true) carries token
 // counts that are forwarded in the message_delta event.
 func StreamOllamaToAnthropic(w http.ResponseWriter, resp *http.Response, requestID string, model string) {
+	if checkResponseStatus(w, resp) {
+		return
+	}
 	sseHeaders(w)
 
 	flusher, ok := w.(http.Flusher)

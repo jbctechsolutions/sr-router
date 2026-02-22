@@ -26,23 +26,25 @@ func NewFailoverEngine(cfg *config.Config, router *Router, tel *telemetry.Collec
 	return &FailoverEngine{cfg: cfg, router: router, telemetry: tel}
 }
 
-// ExecuteWithFailover attempts each model in the tier's failover chain in
-// order. It returns the first successful *http.Response together with the name
-// of the model that produced it. The response body is NOT consumed — the
-// caller is responsible for reading and closing it.
+// ExecuteWithFailover builds a failover chain from the routing decision — the
+// selected model first, then alternatives by score, then remaining tier chain
+// entries, and finally the global fallback. It attempts each model in order
+// and returns the first successful *http.Response together with the name of
+// the model that produced it. The response body is NOT consumed — the caller
+// is responsible for reading and closing it.
 //
 // A provider call is considered successful when the HTTP status code is in the
-// 2xx range. Retryable status codes (429, 5xx) cause the engine to advance to
-// the next model. Non-retryable error responses (e.g. 401, 400) are returned
-// immediately so the caller can surface the original error to the client.
+// 2xx range. Retryable status codes (401, 403, 429, 5xx) cause the engine to
+// advance to the next model. Non-retryable error responses (e.g. 400) are
+// returned immediately so the caller can surface the original provider error.
 //
 // When a network-level error occurs the engine logs it and continues to the
 // next model in the chain.
 //
 // If all models in the chain are exhausted without a successful response,
 // ExecuteWithFailover returns a non-nil error describing the tier.
-func (f *FailoverEngine) ExecuteWithFailover(ctx context.Context, tier string, req ProviderRequest) (*http.Response, string, error) {
-	chain := f.cfg.GetFailoverChain(tier)
+func (f *FailoverEngine) ExecuteWithFailover(ctx context.Context, decision RoutingDecision, req ProviderRequest) (*http.Response, string, error) {
+	chain := f.buildChainFromDecision(decision)
 
 	// Preserve the original raw body so each iteration patches from a clean
 	// copy, avoiding accumulated model-name or suffix mutations.
@@ -110,12 +112,45 @@ func (f *FailoverEngine) ExecuteWithFailover(ctx context.Context, tier string, r
 		return resp, modelName, nil
 	}
 
-	return nil, "", fmt.Errorf("all models in %s chain exhausted", tier)
+	return nil, "", fmt.Errorf("all models in %s chain exhausted", decision.Tier)
+}
+
+// buildChainFromDecision constructs the failover chain: selected model first,
+// then alternatives sorted by score, then remaining models from the tier's
+// static chain, and finally the global fallback. Duplicates are removed.
+func (f *FailoverEngine) buildChainFromDecision(d RoutingDecision) []string {
+	seen := make(map[string]bool)
+	var chain []string
+
+	add := func(name string) {
+		if name != "" && !seen[name] {
+			seen[name] = true
+			chain = append(chain, name)
+		}
+	}
+
+	// 1. Router-selected model first.
+	add(d.Model)
+
+	// 2. Alternatives from the router (already sorted by score).
+	for _, alt := range d.Alternatives {
+		add(alt.Model)
+	}
+
+	// 3. Remaining models from the tier's static failover chain.
+	for _, m := range f.cfg.GetFailoverChain(d.Tier) {
+		add(m)
+	}
+
+	// 4. Global fallback.
+	add(f.cfg.Defaults.FallbackModel)
+
+	return chain
 }
 
 // isRetryableStatus reports whether an HTTP status code warrants trying the
-// next provider in the chain. Rate-limit (429) and all server-error (5xx)
-// responses are considered retryable.
+// next provider in the chain. Auth errors (401, 403), rate-limit (429), and
+// all server-error (5xx) responses are considered retryable.
 func isRetryableStatus(code int) bool {
-	return code == 429 || (code >= 500 && code < 600)
+	return code == 401 || code == 403 || code == 429 || (code >= 500 && code < 600)
 }

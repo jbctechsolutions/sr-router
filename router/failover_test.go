@@ -13,18 +13,19 @@ import (
 )
 
 // TestIsRetryable verifies that isRetryableStatus correctly classifies HTTP
-// status codes as retryable (rate-limit / server error) or non-retryable.
+// status codes as retryable (auth, rate-limit, server error) or non-retryable.
 func TestIsRetryable(t *testing.T) {
 	tests := []struct {
 		statusCode int
 		want       bool
 	}{
+		{401, true},
+		{403, true},
 		{429, true},
 		{500, true},
 		{502, true},
 		{503, true},
 		{400, false},
-		{401, false},
 		{404, false},
 	}
 
@@ -50,6 +51,20 @@ func minimalConfig(models map[string]config.Model, chain []string) *config.Confi
 	}
 }
 
+// testDecision builds a RoutingDecision that selects the first model in the
+// chain for the "test-tier" tier. Alternatives are populated from the
+// remaining chain entries.
+func testDecision(primary string, alts ...string) RoutingDecision {
+	d := RoutingDecision{
+		Model: primary,
+		Tier:  "test-tier",
+	}
+	for _, a := range alts {
+		d.Alternatives = append(d.Alternatives, Alternative{Model: a})
+	}
+	return d
+}
+
 // TestExecuteWithFailover_SuccessFirstModel verifies that when the first
 // provider in the chain returns 200, that response and model name are returned
 // without trying subsequent models.
@@ -64,9 +79,9 @@ func TestExecuteWithFailover_SuccessFirstModel(t *testing.T) {
 	suffix := ""
 	cfg := minimalConfig(map[string]config.Model{
 		"model-a": {
-			Provider: "openai_compat",
-			APIModel: "gpt-test",
-			BaseURL:  srv.URL,
+			Provider:     "openai_compat",
+			APIModel:     "gpt-test",
+			BaseURL:      srv.URL,
 			PromptSuffix: &suffix,
 		},
 	}, []string{"model-a"})
@@ -76,7 +91,7 @@ func TestExecuteWithFailover_SuccessFirstModel(t *testing.T) {
 
 	resp, modelName, err := engine.ExecuteWithFailover(
 		context.Background(),
-		"test-tier",
+		testDecision("model-a"),
 		ProviderRequest{Messages: []ProviderMessage{{Role: "user", Content: "hi"}}},
 	)
 	if err != nil {
@@ -119,7 +134,7 @@ func TestExecuteWithFailover_FailoverOn429(t *testing.T) {
 
 	resp, modelName, err := engine.ExecuteWithFailover(
 		context.Background(),
-		"test-tier",
+		testDecision("model-a", "model-b"),
 		ProviderRequest{Messages: []ProviderMessage{{Role: "user", Content: "hi"}}},
 	)
 	if err != nil {
@@ -154,7 +169,7 @@ func TestExecuteWithFailover_AllModelsExhausted(t *testing.T) {
 
 	_, _, err := engine.ExecuteWithFailover(
 		context.Background(),
-		"test-tier",
+		testDecision("model-a", "model-b"),
 		ProviderRequest{Messages: []ProviderMessage{{Role: "user", Content: "hi"}}},
 	)
 	if err == nil {
@@ -185,7 +200,7 @@ func TestExecuteWithFailover_SkipsUnknownModels(t *testing.T) {
 
 	resp, modelName, err := engine.ExecuteWithFailover(
 		context.Background(),
-		"test-tier",
+		testDecision("ghost-model", "model-b"),
 		ProviderRequest{Messages: []ProviderMessage{{Role: "user", Content: "hi"}}},
 	)
 	if err != nil {
@@ -233,7 +248,7 @@ func TestExecuteWithFailover_RecordsTelemetry(t *testing.T) {
 
 	resp, _, err := engine.ExecuteWithFailover(
 		context.Background(),
-		"test-tier",
+		testDecision("model-a", "model-b"),
 		ProviderRequest{Messages: []ProviderMessage{{Role: "user", Content: "hi"}}},
 	)
 	if err != nil {
@@ -242,13 +257,13 @@ func TestExecuteWithFailover_RecordsTelemetry(t *testing.T) {
 	resp.Body.Close()
 }
 
-// TestExecuteWithFailover_NonRetryableStatusReturned verifies that a 401 or
-// 400 from a provider is returned immediately without trying the next model.
+// TestExecuteWithFailover_NonRetryableStatusReturned verifies that a 400 from
+// a provider is returned immediately without trying the next model.
 func TestExecuteWithFailover_NonRetryableStatusReturned(t *testing.T) {
 	callCount := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		callCount++
-		w.WriteHeader(http.StatusUnauthorized) // 401 — not retryable
+		w.WriteHeader(http.StatusBadRequest) // 400 — not retryable
 	}))
 	defer srv.Close()
 
@@ -263,7 +278,7 @@ func TestExecuteWithFailover_NonRetryableStatusReturned(t *testing.T) {
 
 	resp, modelName, err := engine.ExecuteWithFailover(
 		context.Background(),
-		"test-tier",
+		testDecision("model-a", "model-b"),
 		ProviderRequest{Messages: []ProviderMessage{{Role: "user", Content: "hi"}}},
 	)
 	if err != nil {
@@ -276,6 +291,96 @@ func TestExecuteWithFailover_NonRetryableStatusReturned(t *testing.T) {
 	}
 	if callCount != 1 {
 		t.Errorf("expected exactly 1 call for non-retryable status, got %d", callCount)
+	}
+}
+
+// TestExecuteWithFailover_FailoverOn401 verifies that a 401 (auth error) from
+// the first model causes the engine to try the next model in the chain.
+func TestExecuteWithFailover_FailoverOn401(t *testing.T) {
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		if callCount == 1 {
+			w.WriteHeader(http.StatusUnauthorized) // 401 — retryable
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]string{"ok": "true"})
+	}))
+	defer srv.Close()
+
+	suffix := ""
+	cfg := minimalConfig(map[string]config.Model{
+		"model-a": {Provider: "openai_compat", APIModel: "gpt-a", BaseURL: srv.URL, PromptSuffix: &suffix},
+		"model-b": {Provider: "openai_compat", APIModel: "gpt-b", BaseURL: srv.URL, PromptSuffix: &suffix},
+	}, []string{"model-a", "model-b"})
+
+	router := NewRouter(cfg)
+	engine := NewFailoverEngine(cfg, router, nil)
+
+	resp, modelName, err := engine.ExecuteWithFailover(
+		context.Background(),
+		testDecision("model-a", "model-b"),
+		ProviderRequest{Messages: []ProviderMessage{{Role: "user", Content: "hi"}}},
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if modelName != "model-b" {
+		t.Errorf("expected model-b after auth failover, got %q", modelName)
+	}
+	if callCount != 2 {
+		t.Errorf("expected 2 provider calls (auth retry), got %d", callCount)
+	}
+}
+
+// TestBuildChainFromDecision verifies that the failover chain is built
+// correctly from a RoutingDecision: selected model first, then alternatives,
+// then the tier chain, then fallback — with deduplication.
+func TestBuildChainFromDecision(t *testing.T) {
+	suffix := ""
+	cfg := &config.Config{
+		Defaults: config.Defaults{FallbackModel: "fallback-model"},
+		Models: map[string]config.Model{
+			"selected":       {Provider: "openai_compat", PromptSuffix: &suffix},
+			"alt1":           {Provider: "openai_compat", PromptSuffix: &suffix},
+			"alt2":           {Provider: "openai_compat", PromptSuffix: &suffix},
+			"chain-only":     {Provider: "openai_compat", PromptSuffix: &suffix},
+			"fallback-model": {Provider: "openai_compat", PromptSuffix: &suffix},
+		},
+		Failover: map[string]config.FailoverSpec{
+			"test-tier": {Chain: []string{"alt1", "chain-only", "selected"}},
+		},
+	}
+
+	rtr := NewRouter(cfg)
+	engine := NewFailoverEngine(cfg, rtr, nil)
+
+	decision := RoutingDecision{
+		Model: "selected",
+		Tier:  "test-tier",
+		Alternatives: []Alternative{
+			{Model: "alt1"},
+			{Model: "alt2"},
+		},
+	}
+
+	chain := engine.buildChainFromDecision(decision)
+
+	// Expected order: selected, alt1, alt2, chain-only, fallback-model
+	// "selected" already seen so not duplicated from tier chain.
+	// "alt1" already seen so not duplicated from tier chain.
+	want := []string{"selected", "alt1", "alt2", "chain-only", "fallback-model"}
+	if len(chain) != len(want) {
+		t.Fatalf("chain length = %d, want %d: %v", len(chain), len(want), chain)
+	}
+	for i, w := range want {
+		if chain[i] != w {
+			t.Errorf("chain[%d] = %q, want %q (full chain: %v)", i, chain[i], w, chain)
+		}
 	}
 }
 
@@ -623,7 +728,7 @@ func TestExecuteWithFailover_RawPassthroughForAnthropic(t *testing.T) {
 
 	resp, _, err := engine.ExecuteWithFailover(
 		context.Background(),
-		"test-tier",
+		testDecision("model-a"),
 		ProviderRequest{
 			Messages:         []ProviderMessage{{Role: "user", Content: "hi"}},
 			RawAnthropicBody: rawBody,

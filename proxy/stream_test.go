@@ -19,7 +19,8 @@ data: [DONE]
 
 `
 	resp := &http.Response{
-		Body: io.NopCloser(strings.NewReader(sseData)),
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(sseData)),
 	}
 
 	w := httptest.NewRecorder()
@@ -63,7 +64,8 @@ data: [DONE]
 
 `
 	resp := &http.Response{
-		Body: io.NopCloser(strings.NewReader(sseData)),
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(sseData)),
 	}
 
 	w := httptest.NewRecorder()
@@ -87,7 +89,8 @@ data: [DONE]
 func TestStreamOpenAIToAnthropic_ContentType(t *testing.T) {
 	sseData := "data: [DONE]\n\n"
 	resp := &http.Response{
-		Body: io.NopCloser(strings.NewReader(sseData)),
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(sseData)),
 	}
 
 	w := httptest.NewRecorder()
@@ -107,7 +110,8 @@ func TestStreamOllamaToAnthropic(t *testing.T) {
 {"model":"llama3.2","message":{"role":"assistant","content":""},"done":true,"eval_count":42}
 `
 	resp := &http.Response{
-		Body: io.NopCloser(strings.NewReader(ollamaData)),
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(ollamaData)),
 	}
 
 	w := httptest.NewRecorder()
@@ -146,7 +150,8 @@ func TestStreamOllamaToAnthropic_ContentType(t *testing.T) {
 	ollamaData := `{"model":"llama3.2","message":{"role":"assistant","content":""},"done":true}
 `
 	resp := &http.Response{
-		Body: io.NopCloser(strings.NewReader(ollamaData)),
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(ollamaData)),
 	}
 
 	w := httptest.NewRecorder()
@@ -175,7 +180,8 @@ data: {"type":"message_stop"}
 
 `
 	resp := &http.Response{
-		Body: io.NopCloser(strings.NewReader(sseData)),
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader(sseData)),
 	}
 
 	w := httptest.NewRecorder()
@@ -205,7 +211,8 @@ data: {"type":"message_stop"}
 // passthrough path.
 func TestStreamAnthropicPassthrough_ContentType(t *testing.T) {
 	resp := &http.Response{
-		Body: io.NopCloser(strings.NewReader("event: message_stop\ndata: {}\n\n")),
+		StatusCode: http.StatusOK,
+		Body:       io.NopCloser(strings.NewReader("event: message_stop\ndata: {}\n\n")),
 	}
 
 	w := httptest.NewRecorder()
@@ -214,5 +221,71 @@ func TestStreamAnthropicPassthrough_ContentType(t *testing.T) {
 	ct := w.Header().Get("Content-Type")
 	if ct != "text/event-stream" {
 		t.Errorf("expected Content-Type text/event-stream, got %q", ct)
+	}
+}
+
+// --- Error status tests for streaming functions -----------------------------
+
+// TestStreamAnthropicPassthrough_ErrorStatus verifies that a non-2xx response
+// returns a JSON error instead of attempting to stream SSE.
+func TestStreamAnthropicPassthrough_ErrorStatus(t *testing.T) {
+	resp := &http.Response{
+		StatusCode: http.StatusBadGateway,
+		Body:       io.NopCloser(strings.NewReader(`{"error":"bad gateway"}`)),
+	}
+
+	w := httptest.NewRecorder()
+	StreamAnthropicPassthrough(w, resp, "err-pass")
+
+	if w.Code != http.StatusBadGateway {
+		t.Errorf("expected status %d, got %d", http.StatusBadGateway, w.Code)
+	}
+	ct := w.Header().Get("Content-Type")
+	if ct != "application/json" {
+		t.Errorf("expected Content-Type application/json on error, got %q", ct)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "upstream provider returned 502") {
+		t.Errorf("error body should describe upstream status, got: %s", body)
+	}
+}
+
+// TestStreamOpenAIToAnthropic_ErrorStatus verifies that a non-2xx response
+// returns a JSON error instead of streaming.
+func TestStreamOpenAIToAnthropic_ErrorStatus(t *testing.T) {
+	resp := &http.Response{
+		StatusCode: http.StatusUnauthorized,
+		Body:       io.NopCloser(strings.NewReader(`{"error":"unauthorized"}`)),
+	}
+
+	w := httptest.NewRecorder()
+	StreamOpenAIToAnthropic(w, resp, "err-oai", "gpt-4o")
+
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("expected status %d, got %d", http.StatusUnauthorized, w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "upstream provider returned 401") {
+		t.Errorf("error body should describe upstream status, got: %s", body)
+	}
+}
+
+// TestStreamOllamaToAnthropic_ErrorStatus verifies that a non-2xx response
+// returns a JSON error instead of streaming.
+func TestStreamOllamaToAnthropic_ErrorStatus(t *testing.T) {
+	resp := &http.Response{
+		StatusCode: http.StatusServiceUnavailable,
+		Body:       io.NopCloser(strings.NewReader(`service unavailable`)),
+	}
+
+	w := httptest.NewRecorder()
+	StreamOllamaToAnthropic(w, resp, "err-ollama", "llama3.2")
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected status %d, got %d", http.StatusServiceUnavailable, w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "upstream provider returned 503") {
+		t.Errorf("error body should describe upstream status, got: %s", body)
 	}
 }

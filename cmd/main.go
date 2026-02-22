@@ -77,7 +77,7 @@ func main() {
 
 			fmt.Printf("Route Class:  %s\n", classification.RouteClass)
 			fmt.Printf("Task Type:    %s\n", classification.TaskType)
-			fmt.Printf("Tier:         %s\n", classification.Tier)
+			fmt.Printf("Tier:         %s\n", decision.Tier)
 			fmt.Printf("Model:        %s\n", decision.Model)
 			fmt.Printf("Score:        %.2f\n", decision.Score)
 			fmt.Printf("Est. Cost:    $%.4f/1k tokens\n", decision.EstCost)
@@ -185,13 +185,14 @@ func main() {
 		Short: "Start transparent HTTP proxy",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			port, _ := cmd.Flags().GetString("port")
+			dryRun, _ := cmd.Flags().GetBool("dry-run")
 
 			cfg, err := config.Load(resolveConfig())
 			if err != nil {
 				return fmt.Errorf("loading config: %w", err)
 			}
 
-			srv, err := proxy.NewProxyServer(cfg, port)
+			srv, err := proxy.NewProxyServer(cfg, port, dryRun)
 			if err != nil {
 				return fmt.Errorf("creating proxy server: %w", err)
 			}
@@ -199,6 +200,7 @@ func main() {
 		},
 	}
 	proxyCmd.Flags().String("port", "8889", "Port to listen on")
+	proxyCmd.Flags().Bool("dry-run", false, "Return mock responses with routing decisions instead of calling providers")
 	proxyCmd.Flags().Bool("dashboard", false, "Open dashboard in browser on startup")
 
 	// -------------------------------------------------------------------------

@@ -2,11 +2,13 @@ package proxy
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -25,13 +27,16 @@ type ProxyServer struct {
 	telemetry  *telemetry.Collector
 	cfg        *config.Config
 	port       string
+	dryRun     bool
 }
 
 // NewProxyServer constructs a ProxyServer wired to the provided config. It
 // initialises the classifier, router, and failover engine. Telemetry uses a
 // SQLite database in the OS temp directory; if that fails, telemetry is
-// disabled with a warning rather than preventing startup.
-func NewProxyServer(cfg *config.Config, port string) (*ProxyServer, error) {
+// disabled with a warning rather than preventing startup. When dryRun is true,
+// the proxy returns mock responses containing the routing decision instead of
+// forwarding to real providers.
+func NewProxyServer(cfg *config.Config, port string, dryRun bool) (*ProxyServer, error) {
 	classifier := router.NewClassifier(cfg)
 	rtr := router.NewRouter(cfg)
 
@@ -51,6 +56,7 @@ func NewProxyServer(cfg *config.Config, port string) (*ProxyServer, error) {
 		telemetry:  tel,
 		cfg:        cfg,
 		port:       port,
+		dryRun:     dryRun,
 	}, nil
 }
 
@@ -73,6 +79,9 @@ func (p *ProxyServer) Start() error {
 	handler := loggingMiddleware(mux)
 
 	log.Printf("sr-router proxy starting on port %s", p.port)
+	if p.dryRun {
+		log.Printf("DRY-RUN MODE: no provider calls will be made")
+	}
 	log.Printf("Endpoint: http://localhost:%s/v1/messages", p.port)
 	return http.ListenAndServe(":"+p.port, handler)
 }
@@ -135,6 +144,12 @@ func (p *ProxyServer) handleMessages(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Routing: class=%s task=%s tier=%s model=%s",
 		classification.RouteClass, classification.TaskType, classification.Tier, decision.Model)
 
+	// 6a. Dry-run: return a mock response with the routing decision.
+	if p.dryRun {
+		p.serveDryRun(w, req, eventID, classification, decision)
+		return
+	}
+
 	// 6. Build the normalised provider request.
 	var messages []router.ProviderMessage
 	for _, msg := range req.Messages {
@@ -167,7 +182,7 @@ func (p *ProxyServer) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 7. Execute with failover.
-	resp, usedModel, err := p.failover.ExecuteWithFailover(r.Context(), decision.Tier, provReq)
+	resp, usedModel, err := p.failover.ExecuteWithFailover(r.Context(), decision, provReq)
 	if err != nil {
 		sendError(w, "api_error", "All providers failed: "+err.Error(), http.StatusBadGateway)
 		return
@@ -182,7 +197,7 @@ func (p *ProxyServer) handleMessages(w http.ResponseWriter, r *http.Request) {
 			ID:            eventID,
 			RouteClass:    classification.RouteClass,
 			TaskType:      classification.TaskType,
-			Tier:          classification.Tier,
+			Tier:          decision.Tier,
 			SelectedModel: usedModel,
 			LatencyMs:     latencyMs,
 			EstimatedCost: decision.EstCost,
@@ -227,6 +242,59 @@ func (p *ProxyServer) handleMessages(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write(respBody) //nolint:errcheck
 	}
+}
+
+// dryRunText builds a human-readable summary of the routing decision.
+func dryRunText(c router.Classification, d router.RoutingDecision) string {
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "[sr-router dry-run]\n")
+	fmt.Fprintf(&sb, "Route Class: %s\n", c.RouteClass)
+	fmt.Fprintf(&sb, "Task Type:   %s\n", c.TaskType)
+	fmt.Fprintf(&sb, "Tier:        %s\n", d.Tier)
+	fmt.Fprintf(&sb, "Model:       %s\n", d.Model)
+	fmt.Fprintf(&sb, "Score:       %.2f\n", d.Score)
+	fmt.Fprintf(&sb, "Est. Cost:   $%.4f/1k tokens\n", d.EstCost)
+	if len(d.Alternatives) > 0 {
+		fmt.Fprintf(&sb, "Alternatives:")
+		for _, alt := range d.Alternatives {
+			fmt.Fprintf(&sb, " %s(%.2f)", alt.Model, alt.Score)
+		}
+		fmt.Fprintf(&sb, "\n")
+	}
+	return sb.String()
+}
+
+// serveDryRun writes a mock Anthropic response (streaming or non-streaming)
+// containing the routing decision. No provider call is made.
+func (p *ProxyServer) serveDryRun(w http.ResponseWriter, req AnthropicRequest, eventID string, c router.Classification, d router.RoutingDecision) {
+	text := dryRunText(c, d)
+
+	if req.Stream {
+		sseHeaders(w)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			http.Error(w, "streaming not supported", http.StatusInternalServerError)
+			return
+		}
+		emitPreamble(w, flusher, "msg_"+eventID[:8], d.Model)
+		writeSSEEvent(w, flusher, "content_block_delta", buildContentBlockDelta(text))
+		emitEpilogue(w, flusher, 0)
+		return
+	}
+
+	resp := AnthropicResponse{
+		ID:   "msg_" + eventID[:8],
+		Type: "message",
+		Role: "assistant",
+		Content: []ContentBlock{
+			{Type: "text", Text: text},
+		},
+		Model:      d.Model,
+		StopReason: "end_turn",
+		Usage:      Usage{InputTokens: 0, OutputTokens: 0},
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(resp) //nolint:errcheck
 }
 
 // translateOpenAIResponseToAnthropic converts a non-streaming OpenAI chat
