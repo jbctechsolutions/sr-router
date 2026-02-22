@@ -85,7 +85,7 @@ func TestClassifyMinQualityFromTask(t *testing.T) {
 	}
 
 	// Code task has min_quality 0.80.
-	result = c.Classify("Write a function to parse JSON", nil)
+	result = c.Classify("Write a function to handle errors", nil)
 	if result.MinQuality != 0.80 {
 		t.Errorf("expected min_quality 0.80 for code, got %.2f", result.MinQuality)
 	}
