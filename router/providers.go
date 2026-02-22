@@ -26,6 +26,12 @@ type ProviderRequest struct {
 	// preserving tool_use, tool_result, images, thinking blocks, etc. — with
 	// only the model name and system-prompt suffix patched.
 	RawAnthropicBody []byte
+
+	// AnthropicAuthHeader carries the incoming client's auth header for
+	// forwarding to Anthropic. Supports both OAuth ("Authorization: Bearer …")
+	// and API key ("x-api-key: …") auth. When set, this is used instead of
+	// the ANTHROPIC_API_KEY environment variable.
+	AnthropicAuthHeader http.Header
 }
 
 // ProviderMessage is a single turn in the conversation.
@@ -54,7 +60,7 @@ func callProvider(ctx context.Context, model config.Model, req ProviderRequest) 
 	switch model.Provider {
 	case "anthropic":
 		if len(req.RawAnthropicBody) > 0 {
-			return callAnthropicRaw(ctx, model, req.RawAnthropicBody)
+			return callAnthropicRaw(ctx, model, req.RawAnthropicBody, req.AnthropicAuthHeader)
 		}
 		return callAnthropic(ctx, model, req)
 	case "openai_compat":
@@ -67,7 +73,8 @@ func callProvider(ctx context.Context, model config.Model, req ProviderRequest) 
 }
 
 // callAnthropic sends a request to the Anthropic Messages API.
-// It uses the ANTHROPIC_API_KEY environment variable for authentication.
+// Auth is forwarded from the incoming client request when available,
+// otherwise falls back to the ANTHROPIC_API_KEY environment variable.
 func callAnthropic(ctx context.Context, model config.Model, req ProviderRequest) (*http.Response, error) {
 	endpoint := "https://api.anthropic.com/v1/messages"
 
@@ -82,10 +89,9 @@ func callAnthropic(ctx context.Context, model config.Model, req ProviderRequest)
 		return nil, fmt.Errorf("creating anthropic request: %w", err)
 	}
 
-	apiKey := resolveAPIKey("anthropic", "")
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", apiKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
+	setAnthropicAuth(httpReq, req.AnthropicAuthHeader)
 
 	return http.DefaultClient.Do(httpReq)
 }
@@ -135,6 +141,27 @@ func callOllama(ctx context.Context, model config.Model, req ProviderRequest) (*
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	return http.DefaultClient.Do(httpReq)
+}
+
+// setAnthropicAuth sets auth headers on an outgoing Anthropic request.
+// If the incoming client provided auth headers, those are forwarded directly
+// (supporting both OAuth Bearer tokens and x-api-key). Otherwise falls back
+// to the ANTHROPIC_API_KEY environment variable.
+func setAnthropicAuth(httpReq *http.Request, clientAuth http.Header) {
+	if clientAuth != nil {
+		if auth := clientAuth.Get("Authorization"); auth != "" {
+			httpReq.Header.Set("Authorization", auth)
+			return
+		}
+		if key := clientAuth.Get("X-Api-Key"); key != "" {
+			httpReq.Header.Set("x-api-key", key)
+			return
+		}
+	}
+	// Fallback to environment variable.
+	if apiKey := resolveAPIKey("anthropic", ""); apiKey != "" {
+		httpReq.Header.Set("x-api-key", apiKey)
+	}
 }
 
 // resolveAPIKey returns the environment variable value appropriate for the
@@ -225,7 +252,7 @@ func buildOpenAICompatBody(req ProviderRequest, apiModel string) map[string]inte
 // callAnthropicRaw sends a pre-built JSON body to the Anthropic Messages API.
 // The body is forwarded as-is — the caller is responsible for patching the
 // model name and injecting any prompt suffix before calling this function.
-func callAnthropicRaw(ctx context.Context, model config.Model, patchedBody []byte) (*http.Response, error) {
+func callAnthropicRaw(ctx context.Context, model config.Model, patchedBody []byte, authHeader http.Header) (*http.Response, error) {
 	endpoint := "https://api.anthropic.com/v1/messages"
 
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(patchedBody))
@@ -233,10 +260,9 @@ func callAnthropicRaw(ctx context.Context, model config.Model, patchedBody []byt
 		return nil, fmt.Errorf("creating anthropic raw request: %w", err)
 	}
 
-	apiKey := resolveAPIKey("anthropic", "")
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", apiKey)
 	httpReq.Header.Set("anthropic-version", "2023-06-01")
+	setAnthropicAuth(httpReq, authHeader)
 
 	return http.DefaultClient.Do(httpReq)
 }

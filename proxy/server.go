@@ -147,13 +147,23 @@ func (p *ProxyServer) handleMessages(w http.ResponseWriter, r *http.Request) {
 	// Inject the model-specific prompt suffix into the system prompt.
 	modifiedSystem := p.router.InjectSuffix(decision.Model, systemPrompt)
 
+	// Capture incoming auth headers to forward to Anthropic.
+	authHeader := make(http.Header)
+	if auth := r.Header.Get("Authorization"); auth != "" {
+		authHeader.Set("Authorization", auth)
+	}
+	if key := r.Header.Get("X-Api-Key"); key != "" {
+		authHeader.Set("X-Api-Key", key)
+	}
+
 	provReq := router.ProviderRequest{
-		SystemPrompt:     modifiedSystem,
-		Messages:         messages,
-		MaxTokens:        req.MaxTokens,
-		Temperature:      req.Temperature,
-		Stream:           req.Stream,
-		RawAnthropicBody: body,
+		SystemPrompt:        modifiedSystem,
+		Messages:            messages,
+		MaxTokens:           req.MaxTokens,
+		Temperature:         req.Temperature,
+		Stream:              req.Stream,
+		RawAnthropicBody:    body,
+		AnthropicAuthHeader: authHeader,
 	}
 
 	// 7. Execute with failover.

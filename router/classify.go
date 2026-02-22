@@ -79,12 +79,13 @@ func (c *Classifier) Classify(prompt string, headers map[string]string) Classifi
 	taskType, strengths, confidence := c.detectTaskType(prompt)
 
 	rc := c.cfg.RouteClasses[routeClass]
-	minQuality := rc.QualityFloor
 
+	// Task min_quality drives the quality floor — this determines which
+	// models are eligible. The route class floor no longer forces everything
+	// to premium; it only applies as a boost for explicit header overrides.
+	minQuality := rc.QualityFloor
 	if task, ok := c.cfg.Tasks[taskType]; ok {
-		if task.MinQuality > minQuality {
-			minQuality = task.MinQuality
-		}
+		minQuality = task.MinQuality
 	}
 
 	return Classification{

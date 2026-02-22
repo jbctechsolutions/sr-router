@@ -33,48 +33,33 @@ func NewRouter(cfg *config.Config) *Router {
 	return &Router{cfg: cfg}
 }
 
-// Route picks the best model in the classification's tier using a weighted
+// Route picks the best model across ALL configured models using a weighted
 // score: cost_weight * cost_score + quality_weight * quality_score.
 //
-// Models that do not meet the MinQuality floor or that lack a required strength
-// are excluded before scoring. If no model qualifies, the configured fallback
-// model is returned with a zero score.
+// Models that do not meet the task's MinQuality floor or that lack a required
+// strength are excluded before scoring. The tier is derived from the selected
+// model's membership rather than being predetermined by the route class.
+// If no model qualifies, the configured fallback model is returned.
 func (r *Router) Route(class Classification) RoutingDecision {
-	tierModels := r.cfg.GetTierModels(class.Tier)
-	if len(tierModels) == 0 {
-		// Tier unknown — consider every model in the catalogue.
-		for name := range r.cfg.Models {
-			tierModels = append(tierModels, name)
-		}
-	}
-
 	type scored struct {
 		name  string
 		score float64
 	}
 
-	// Determine the maximum cost among candidate models so we can normalise the
-	// cost dimension to [0, 1].  Models with cost 0 receive the best cost score.
+	// Determine the maximum cost across all models for normalisation.
 	maxCost := 0.0
-	for _, name := range tierModels {
-		if m, ok := r.cfg.Models[name]; ok {
-			if m.CostPer1kTok > maxCost {
-				maxCost = m.CostPer1kTok
-			}
+	for _, m := range r.cfg.Models {
+		if m.CostPer1kTok > maxCost {
+			maxCost = m.CostPer1kTok
 		}
 	}
 	if maxCost == 0 {
-		maxCost = 1.0 // prevent division by zero; all costs are 0 → equal cost score
+		maxCost = 1.0
 	}
 
 	var candidates []scored
 
-	for _, name := range tierModels {
-		m, ok := r.cfg.Models[name]
-		if !ok {
-			continue // model referenced in tier but not defined — skip
-		}
-
+	for name, m := range r.cfg.Models {
 		// Quality floor filter.
 		if m.QualityCeiling < class.MinQuality {
 			continue
@@ -101,7 +86,7 @@ func (r *Router) Route(class Classification) RoutingDecision {
 			Model:     r.cfg.Defaults.FallbackModel,
 			Score:     0,
 			Tier:      class.Tier,
-			Reasoning: "no qualified models in tier, using fallback",
+			Reasoning: "no qualified models, using fallback",
 		}
 	}
 
@@ -121,14 +106,29 @@ func (r *Router) Route(class Classification) RoutingDecision {
 	}
 
 	m := r.cfg.Models[best.name]
+	tier := r.findModelTier(best.name)
+
 	return RoutingDecision{
 		Model:        best.name,
 		Score:        best.score,
-		Tier:         class.Tier,
-		Reasoning:    "best score in " + class.Tier + " tier",
+		Tier:         tier,
+		Reasoning:    class.TaskType + " task → " + best.name + " (cheapest qualified)",
 		EstCost:      m.CostPer1kTok,
 		Alternatives: alts,
 	}
+}
+
+// findModelTier returns the tier name that contains the given model.
+// If the model is not in any tier, returns the fallback tier "premium".
+func (r *Router) findModelTier(modelName string) string {
+	for tierName, tier := range r.cfg.Tiers {
+		for _, m := range tier.Models {
+			if m == modelName {
+				return tierName
+			}
+		}
+	}
+	return "premium"
 }
 
 // hasStrengths reports whether modelStrengths contains every element of

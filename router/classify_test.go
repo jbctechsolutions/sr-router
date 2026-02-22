@@ -72,3 +72,27 @@ func TestClassifySetsTierFromRouteClass(t *testing.T) {
 		t.Errorf("expected budget tier for background, got %s", result.Tier)
 	}
 }
+
+func TestClassifyMinQualityFromTask(t *testing.T) {
+	cfg := loadTestConfig(t)
+	c := NewClassifier(cfg)
+
+	// Summarization task has min_quality 0.50 — should NOT be boosted to
+	// interactive's 0.85 floor.
+	result := c.Classify("Summarize this document", nil)
+	if result.MinQuality != 0.50 {
+		t.Errorf("expected min_quality 0.50 for summarization, got %.2f", result.MinQuality)
+	}
+
+	// Code task has min_quality 0.80.
+	result = c.Classify("Write a function to parse JSON", nil)
+	if result.MinQuality != 0.80 {
+		t.Errorf("expected min_quality 0.80 for code, got %.2f", result.MinQuality)
+	}
+
+	// Architecture task has min_quality 0.90.
+	result = c.Classify("Design a microservice architecture", nil)
+	if result.MinQuality != 0.90 {
+		t.Errorf("expected min_quality 0.90 for architecture, got %.2f", result.MinQuality)
+	}
+}
