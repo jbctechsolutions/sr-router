@@ -117,13 +117,32 @@ func (p *ProxyServer) handleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 2. Extract text for classification.
+	// 2. Extract text for classification from the last user message only
+	// (earlier messages are conversation history and add noise). Strip
+	// infrastructure tags like <system-reminder> injected by Claude Code.
 	systemPrompt := ExtractSystemPrompt(req.System)
 	var promptText string
-	for _, msg := range req.Messages {
-		if msg.Role == "user" {
-			promptText += ExtractText(msg.Content) + " "
+	for i := len(req.Messages) - 1; i >= 0; i-- {
+		if req.Messages[i].Role == "user" {
+			promptText = stripSystemReminders(ExtractText(req.Messages[i].Content))
+			break
 		}
+	}
+
+	// Debug: log what the classifier will see.
+	if p.dryRun {
+		if len(systemPrompt) > 200 {
+			log.Printf("DEBUG system_prompt (first 200 chars): %s...", systemPrompt[:200])
+		} else {
+			log.Printf("DEBUG system_prompt: %s", systemPrompt)
+		}
+		log.Printf("DEBUG system_prompt length: %d chars", len(systemPrompt))
+		if len(promptText) > 500 {
+			log.Printf("DEBUG user_text (first 500 chars): %s...", promptText[:500])
+		} else {
+			log.Printf("DEBUG user_text: %s", promptText)
+		}
+		log.Printf("DEBUG messages: %d total", len(req.Messages))
 	}
 
 	// 3. Collect headers that influence route-class detection.

@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"regexp"
 	"strings"
 )
 
@@ -57,6 +58,18 @@ func ExtractText(raw json.RawMessage) string {
 // The system field can be a plain string or an array of content blocks.
 func ExtractSystemPrompt(raw json.RawMessage) string {
 	return ExtractText(raw)
+}
+
+// systemReminderRe matches <system-reminder>...</system-reminder> blocks
+// injected by Claude Code hooks and plugins.
+var systemReminderRe = regexp.MustCompile(`(?s)<system-reminder>.*?</system-reminder>`)
+
+// stripSystemReminders removes <system-reminder> blocks and collapses
+// resulting whitespace runs into a single space.
+func stripSystemReminders(s string) string {
+	s = systemReminderRe.ReplaceAllString(s, " ")
+	// Collapse runs of whitespace left behind.
+	return strings.Join(strings.Fields(s), " ")
 }
 
 // AnthropicResponse is the non-streaming response format returned to clients.
