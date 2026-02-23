@@ -18,13 +18,16 @@ import (
 	"github.com/jbctechsolutions/sr-router/telemetry"
 )
 
+var version = "dev"
+
 func main() {
 	var configDir string
 
 	rootCmd := &cobra.Command{
-		Use:   "sr-router",
-		Short: "Intelligent LLM request router",
-		Long:  "Routes LLM requests to the cheapest model that meets quality requirements.",
+		Use:     "sr-router",
+		Short:   "Intelligent LLM request router",
+		Long:    "Routes LLM requests to the cheapest model that meets quality requirements.",
+		Version: version,
 	}
 
 	// --config is persistent so all subcommands inherit it.
