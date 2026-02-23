@@ -1,0 +1,15 @@
+{
+  "description": "sr-router routing visibility hook",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "'${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd' show-route"
+          }
+        ]
+      }
+    ]
+  }
+}

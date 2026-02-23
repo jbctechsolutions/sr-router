@@ -1,7 +1,9 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -52,9 +54,34 @@ func main() {
 	routeCmd := &cobra.Command{
 		Use:   "route [prompt]",
 		Short: "Route a prompt to the best model",
-		Args:  cobra.MinimumNArgs(1),
+		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			prompt := strings.Join(args, " ")
+			useStdin, _ := cmd.Flags().GetBool("stdin")
+			useJSON, _ := cmd.Flags().GetBool("json")
+
+			var prompt string
+			if useStdin {
+				raw, err := io.ReadAll(os.Stdin)
+				if err != nil {
+					return fmt.Errorf("reading stdin: %w", err)
+				}
+				var input struct {
+					Prompt string `json:"prompt"`
+				}
+				if err := json.Unmarshal(raw, &input); err != nil {
+					return fmt.Errorf("parsing stdin JSON: %w", err)
+				}
+				prompt = input.Prompt
+			} else {
+				if len(args) == 0 {
+					return fmt.Errorf("requires at least 1 arg(s), only received 0")
+				}
+				prompt = strings.Join(args, " ")
+			}
+
+			if prompt == "" {
+				return fmt.Errorf("empty prompt")
+			}
 
 			cfg, err := config.Load(resolveConfig())
 			if err != nil {
@@ -74,6 +101,29 @@ func main() {
 
 			classification := classifier.Classify(prompt, headers)
 			decision := rtr.Route(classification)
+
+			if useJSON {
+				type jsonOutput struct {
+					Model      string  `json:"model"`
+					Tier       string  `json:"tier"`
+					Task       string  `json:"task"`
+					RouteClass string  `json:"route_class"`
+					Score      float64 `json:"score"`
+				}
+				out := jsonOutput{
+					Model:      decision.Model,
+					Tier:       decision.Tier,
+					Task:       classification.TaskType,
+					RouteClass: classification.RouteClass,
+					Score:      decision.Score,
+				}
+				b, err := json.Marshal(out)
+				if err != nil {
+					return fmt.Errorf("marshaling JSON: %w", err)
+				}
+				fmt.Println(string(b))
+				return nil
+			}
 
 			fmt.Printf("Route Class:  %s\n", classification.RouteClass)
 			fmt.Printf("Task Type:    %s\n", classification.TaskType)
@@ -97,6 +147,8 @@ func main() {
 	}
 	routeCmd.Flags().Bool("background", false, "Force background route class")
 	routeCmd.Flags().Bool("interactive", false, "Force interactive route class")
+	routeCmd.Flags().Bool("json", false, "Output as JSON")
+	routeCmd.Flags().Bool("stdin", false, "Read prompt from stdin JSON")
 
 	// -------------------------------------------------------------------------
 	// classify — classify only, no routing

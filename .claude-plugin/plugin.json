@@ -1,0 +1,14 @@
+{
+  "name": "sr-router",
+  "version": "0.1.0",
+  "description": "Intelligent LLM request router — routes Claude Code requests to the cheapest model meeting quality requirements",
+  "author": {
+    "name": "JBC Tech Solutions",
+    "email": "joel@jbc.dev"
+  },
+  "repository": "https://github.com/jbctechsolutions/sr-router",
+  "license": "MIT",
+  "keywords": ["router", "cost-optimization", "llm", "model-routing"],
+  "skills": "./skills/",
+  "commands": "./commands/"
+}

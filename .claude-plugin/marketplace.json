@@ -1,0 +1,25 @@
+{
+  "name": "sr-router",
+  "displayName": "SR Router",
+  "version": "0.1.0",
+  "description": "Intelligent LLM request router — routes Claude Code requests to the cheapest model meeting quality requirements",
+  "plugins": [
+    {
+      "id": "sr-router",
+      "name": "SR Router",
+      "description": "Intelligent LLM request router with MCP tools, routing visibility hook, and HTTP proxy",
+      "version": "0.1.0",
+      "author": "JBC Tech Solutions",
+      "license": "MIT",
+      "homepage": "https://github.com/jbctechsolutions/sr-router",
+      "repository": {
+        "type": "git",
+        "url": "https://github.com/jbctechsolutions/sr-router.git"
+      },
+      "source": {
+        "type": "directory",
+        "path": ".."
+      }
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+{
+  "sr-router": {
+    "command": "${CLAUDE_PLUGIN_ROOT}/bin/sr-router",
+    "args": ["mcp", "--config", "${CLAUDE_PLUGIN_ROOT}/config"]
+  }
+}
